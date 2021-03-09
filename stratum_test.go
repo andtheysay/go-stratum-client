@@ -12,10 +12,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	yaml "gopkg.in/yaml.v2"
 )
 
 var testConfig map[string]interface{}
+
+func init() {
+	pe := zap.NewProductionEncoderConfig()
+	pe.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	encoder := zapcore.NewConsoleEncoder(pe)
+	core := zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), zap.DebugLevel)
+	zap.ReplaceGlobals(zap.New(core))
+}
 
 func connect(sc *StratumContext) error {
 	defer zap.L().Sync()

@@ -7,22 +7,27 @@ import (
 	"sync"
 
 	stratum "github.com/andtheysay/go-stratum-client"
+	flag "github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-// set up the zap logger
+var port *int
+
 func init() {
+	// set up the zap logger
 	pe := zap.NewProductionEncoderConfig()
 	pe.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	encoder := zapcore.NewConsoleEncoder(pe)
 	core := zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), zap.DebugLevel)
 	zap.ReplaceGlobals(zap.New(core))
+	// set the port
+	port = flag.IntP("port", "p", 8888, "port to run mock stratum server")
 }
 
 func main() {
 	defer zap.L().Sync()
-	server, err := stratum.NewTestServer(8888)
+	server, err := stratum.NewTestServer(*port)
 	if err != nil {
 		zap.L().Fatal("unable to connect", zap.Error(err))
 	}
@@ -36,7 +41,7 @@ func main() {
 					zap.L().Error("failed to send client test job", zap.Error(err))
 				}
 			}
-			zap.L().Info("Received message", zap.String("message", fmt.Sprintf("%v", clientRequest.Request)))
+			zap.L().Info("received message", zap.String("message", fmt.Sprintf("%v", clientRequest.Request)))
 		}
 	}()
 	wg.Wait()
