@@ -1,7 +1,5 @@
 package stratum
 
-import "encoding/json"
-
 type Request struct {
 	MessageID    interface{} `json:"id"`
 	RemoteMethod string      `json:"method"`
@@ -28,5 +26,4 @@ func (r *Request) JsonRPCString() (string, error) {
 		return "", err
 	}
 	return string(b) + "\n", nil
-
 }

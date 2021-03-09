@@ -1,6 +1,7 @@
 package stratum
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -9,17 +10,18 @@ import (
 	"testing"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v2"
 )
 
 var testConfig map[string]interface{}
 
 func connect(sc *StratumContext) error {
+	defer zap.L().Sync()
 	err := sc.Connect(testConfig["pool"].(string))
 	if err != nil {
-		log.Debugf("Connected to pool..")
+		zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "connect"), zap.String("debug", "connected to pool"))
 	}
 	return err
 }
@@ -83,8 +85,9 @@ func TestGetJob(t *testing.T) {
 	sc.RegisterWorkListener(workChan)
 
 	go func() {
+		defer zap.L().Sync()
 		for _ = range workChan {
-			log.Debugf("Calling wg.Done()")
+			zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestGetJob"), zap.String("debug", "calling wg.Done()"))
 			wg.Done()
 		}
 	}()
@@ -107,21 +110,22 @@ func TestReconnect(t *testing.T) {
 	wg.Add(5)
 
 	go func() {
+		defer zap.L().Sync()
 		for obj := range server.EventChan {
-			log.Infof("test: Got object: %t", obj)
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("test object", fmt.Sprintf("%t", obj)))
 			switch evt := obj.(type) {
 			case *TsErrorEvent:
 				require.Fail(fmt.Sprintf("Unexpected failure on method=%v: %v", evt.ClientRequest.Request.RemoteMethod, evt.Error()))
 			case *TsMessageEvent:
-				log.Debugf("Message event")
+				zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("debug", "message event"))
 				switch evt.Method {
 				case "login":
-					log.Infof("login event")
+					zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("debug", "login event"))
 					_, err = evt.ClientRequest.Conn.Write([]byte(evt.DefaultResponse.String() + "\n"))
 					require.Nil(err)
 					wg.Done()
 				case "submit":
-					log.Infof("submit event")
+					zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("debug", "submit event"))
 					_, err = evt.ClientRequest.Conn.Write([]byte(evt.DefaultResponse.String() + "\n"))
 					require.Nil(err)
 					request, err := server.RandomJob()
@@ -131,7 +135,7 @@ func TestReconnect(t *testing.T) {
 					_, err = evt.ClientRequest.Conn.Write([]byte(requestStr))
 					require.Nil(err)
 				case "keepalived":
-					log.Infof("keepalived event")
+					zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("debug", "keepalived event"))
 					// Write partial message and close connection
 					_, err = evt.ClientRequest.Conn.Write([]byte(evt.DefaultResponse.String()[:10] + "\n"))
 					require.Nil(err)
@@ -155,12 +159,13 @@ func TestReconnect(t *testing.T) {
 	sc.RegisterWorkListener(workChan)
 
 	go func() {
+		defer zap.L().Sync()
 		for work := range workChan {
 			go func(work *Work) {
 				time.Sleep(300 * time.Millisecond)
-				log.Debugf("Triggering work submission")
+				zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.String("debug", "triggering work submission"))
 				if err := sc.SubmitWork(work, "0"); err != nil {
-					log.Warnf("Failed work submission: %v", err)
+					zap.L().Error("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestReconnect"), zap.Error(errors.New("failed work submission")), zap.Error(err))
 				}
 			}(work)
 		}
@@ -230,12 +235,13 @@ func TestKeepAlive(t *testing.T) {
 	sc.RegisterWorkListener(workChan)
 
 	go func() {
+		defer zap.L().Sync()
 		for work := range workChan {
 			go func(work *Work) {
 				time.Sleep(300 * time.Millisecond)
-				log.Debugf("Triggering work submission")
+				zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestKeepAlive"), zap.String("debug", "triggering work submission"))
 				if err := sc.SubmitWork(work, "0"); err != nil {
-					log.Warnf("Failed work submission: %v", err)
+					zap.L().Warn("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "connect"), zap.Error(errors.New("failed work submission")), zap.Error(err))
 				}
 			}(work)
 		}
@@ -312,24 +318,20 @@ func TestParallelWrites(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	log.SetLevel(log.WarnLevel)
-
+	defer zap.L().Sync()
 	b, err := ioutil.ReadFile("test-config.yaml")
 	if err != nil {
-		log.Errorf("No test-config.yaml")
-		str := `pool:
-username:
-pass:
-`
+		zap.L().Error("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestMain"), zap.Error(errors.New("no test-config.yaml")))
+		str := "pool:\nusername:\npass:\n"
 		if err := ioutil.WriteFile("test-config.yaml", []byte(str), 0666); err != nil {
-			log.Errorf("Failed to create test-config.yaml: %v", err)
+			zap.L().Error("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestMain"), zap.Error(errors.New("failed to create test-config.yaml")), zap.Error(err))
 		} else {
-			log.Infof("Created test-config.yaml..run tests after filling it out")
-			os.Exit(-1)
+			zap.L().Debug("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestMain"), zap.String("debug", "created test-config.yaml. run tests after filling it out"))
+			os.Exit(0)
 		}
 	} else {
 		if err := yaml.Unmarshal(b, &testConfig); err != nil {
-			log.Fatalf("Failed to unmarshal test-config.yaml: %v", err)
+			zap.L().Fatal("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "TestMain"), zap.Error(errors.New("failed to create test-config.yaml")), zap.Error(err))
 		}
 	}
 	os.Exit(m.Run())

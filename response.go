@@ -1,9 +1,5 @@
 package stratum
 
-import (
-	"encoding/json"
-)
-
 type Response struct {
 	MessageID interface{}            `json:"id"`
 	Result    map[string]interface{} `json:"result"`

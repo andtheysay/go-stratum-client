@@ -2,13 +2,14 @@ package stratum
 
 import (
 	"bufio"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"strings"
 
 	stoppablenetlistener "github.com/gurupras/go-stoppable-net-listener"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 type TestServer struct {
@@ -58,11 +59,12 @@ var (
 // NewTestServer creates a new test server on the specified port.
 // Throws an error if it was unable to bind to the specified port.
 func NewTestServer(port int) (*TestServer, error) {
+	defer zap.L().Sync()
 	snl, err := stoppablenetlistener.New(port)
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("Listening on %v", snl.Addr())
+	zap.L().Info("stratum-client", zap.String("file", "test_server"), zap.String("func", "NewTestServer"), zap.String("listening on", snl.Addr().String()))
 	ts := &TestServer{
 		snl,
 		make(chan *ClientRequest),
@@ -70,13 +72,14 @@ func NewTestServer(port int) (*TestServer, error) {
 		0,
 	}
 	go func() {
+		defer zap.L().Sync()
 		for {
 			conn, err := snl.Accept()
 			if err != nil {
-				// log.Errorf("Failed to accept connection! Terminating test-server: %v", err)
+				zap.L().Error("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "NewTestServer"), zap.Error(errors.New("failed to accept connection! terminate test-server")), zap.Error(err))
 				break
 			}
-			log.Infof("Received connection from '%v'", conn.RemoteAddr())
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "NewTestServer"), zap.String("received connection from", conn.RemoteAddr().String()))
 			go ts.handleConnection(conn)
 		}
 	}()
@@ -84,21 +87,22 @@ func NewTestServer(port int) (*TestServer, error) {
 }
 
 func (ts *TestServer) handleConnection(conn net.Conn) {
-	log.Infof("Starting handleConnection for conn: %v", conn.RemoteAddr())
+	defer zap.L().Sync()
+	zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "handleConnection"), zap.String("starting handleConnection for conn", conn.RemoteAddr().String()))
 	reader := bufio.NewReader(conn)
 	for {
 		msg, err := reader.ReadString('\n')
 		msg = strings.TrimSpace(msg)
 		if err != nil {
-			log.Infof("Breaking connection from IP '%v': %v", conn.RemoteAddr(), err)
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "handleConnection"), zap.String("breaking connection from IP", conn.RemoteAddr().String()), zap.Error(err))
 			break
 		}
-		// log.Infof("Received message from IP: %v: %v", conn.RemoteAddr(), msg)
+		zap.L().Info("stratum-client", zap.String("file", "test_server"), zap.String("func", "handleConnection"), zap.String("received message from", conn.RemoteAddr().String()), zap.String("msg", msg))
 		var request Request
 		if err := json.Unmarshal([]byte(msg), &request); err != nil {
-			log.Errorf("Message not in JSON format: '%s': %v", msg, err)
+			zap.L().Error("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "handleConnection"), zap.String("message not in JSON format", msg), zap.Error(err))
 		} else {
-			log.Infof("Sending request down RequestChan: %v", request)
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "handleConnection"), zap.String("sending request down RequestChan", fmt.Sprintf("%v", request)))
 			ts.RequestChan <- &ClientRequest{
 				conn,
 				&request,
@@ -108,10 +112,11 @@ func (ts *TestServer) handleConnection(conn net.Conn) {
 }
 
 func (ts *TestServer) defaultHandler() {
+	defer zap.L().Sync()
 	for clientRequest := range ts.RequestChan {
 		var err error
 		var response *Response
-		log.Infof("RequestChan: Received message: %v", clientRequest.Request)
+		zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "defaultHandler"), zap.String("RequestChan: received message", fmt.Sprintf("%v", clientRequest.Request)))
 		switch clientRequest.Request.RemoteMethod {
 		case "login":
 			if response, err = ts.RandomAuthResponse(); err != nil {
@@ -122,7 +127,7 @@ func (ts *TestServer) defaultHandler() {
 				break
 			}
 		case "keepalived":
-			log.Infof("Handing keepalive")
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "defaultHandler"), zap.String("info", "handling keepalive"))
 			id := clientRequest.Request.MessageID
 			response = &Response{
 				id,
@@ -133,13 +138,13 @@ func (ts *TestServer) defaultHandler() {
 			}
 		}
 		if err != nil {
-			log.Infof("Sending error down eventChan")
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "defaultHandler"), zap.String("info", "sending error down eventChan"))
 			ts.EventChan <- &TsErrorEvent{
 				clientRequest,
 				err,
 			}
 		} else {
-			log.Infof("Sending message down eventChan")
+			zap.L().Info("stratum-client", zap.String("file", "stratum_test"), zap.String("func", "defaultHandler"), zap.String("info", "sending message down eventChan"))
 			ts.EventChan <- &TsMessageEvent{
 				clientRequest.Request.RemoteMethod,
 				clientRequest,

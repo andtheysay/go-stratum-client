@@ -2,16 +2,18 @@ package stratum
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/fatih/set"
-	log "github.com/sirupsen/logrus"
+	"github.com/andtheysay/set"
+	jsoniter "github.com/json-iterator/go"
+	"go.uber.org/zap"
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 var (
 	KeepAliveDuration time.Duration = 60 * time.Second
@@ -44,21 +46,21 @@ type StratumContext struct {
 func New() *StratumContext {
 	sc := &StratumContext{}
 	sc.KeepAliveDuration = KeepAliveDuration
-	sc.workListeners = set.New()
-	sc.submitListeners = set.New()
-	sc.responseListeners = set.New()
-	sc.submittedWorkRequestIds = set.New()
+	sc.workListeners = set.New(set.ThreadSafe)
+	sc.submitListeners = set.New(set.ThreadSafe)
+	sc.responseListeners = set.New(set.ThreadSafe)
+	sc.submittedWorkRequestIds = set.New(set.ThreadSafe)
 	sc.stopChan = make(chan struct{})
 	return sc
 }
 
 func (sc *StratumContext) Connect(addr string) error {
+	defer zap.L().Sync()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return err
 	}
-
-	log.Debugf("Dial success")
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "Connect"), zap.String("debug", "dial success"))
 	sc.url = addr
 	sc.Conn = conn
 	sc.reader = bufio.NewReader(conn)
@@ -76,6 +78,7 @@ func (sc *StratumContext) Call(serviceMethod string, args interface{}) (*Request
 // CallLocked issues a JSONRPC request for the specified serviceMethod.
 // The StratumContext lock is expected to be held by the caller
 func (sc *StratumContext) CallLocked(serviceMethod string, args interface{}) (*Request, error) {
+	defer zap.L().Sync()
 	sc.id++
 
 	req := NewRequest(sc.id, serviceMethod, args)
@@ -87,7 +90,7 @@ func (sc *StratumContext) CallLocked(serviceMethod string, args interface{}) (*R
 	if _, err := sc.Write([]byte(str)); err != nil {
 		return nil, err
 	}
-	log.Debugf("Sent to server via conn: %v: %v", sc.Conn.LocalAddr(), str)
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "CallLocked"), zap.String("conn", sc.Conn.LocalAddr().String()), zap.String("str", str))
 	return req, nil
 }
 
@@ -112,12 +115,14 @@ func (sc *StratumContext) ReadJSON() (map[string]interface{}, error) {
 }
 
 func (sc *StratumContext) ReadResponse() (*Response, error) {
+	defer zap.L().Sync()
 	line, err := sc.ReadLine()
 	if err != nil {
 		return nil, err
 	}
 	line = strings.TrimSpace(line)
-	log.Debugf("Server sent back: %v", line)
+
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "ReadResponse"), zap.String("server sent back", line))
 	return ParseResponse([]byte(line))
 }
 
@@ -128,7 +133,8 @@ func (sc *StratumContext) Authorize(username, password string) error {
 }
 
 func (sc *StratumContext) authorizeLocked(username, password string) error {
-	log.Debugf("Beginning authorize")
+	defer zap.L().Sync()
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "authorizeLocked"), zap.String("debug", "beginning authorize"))
 	args := make(map[string]interface{})
 	args["login"] = username
 	args["pass"] = password
@@ -138,8 +144,7 @@ func (sc *StratumContext) authorizeLocked(username, password string) error {
 	if err != nil {
 		return err
 	}
-
-	log.Debugf("Triggered login..awaiting response")
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "authorizeLocked"), zap.String("debug", "triggered login... awaiting response"))
 	response, err := sc.ReadResponse()
 	if err != nil {
 		return err
@@ -161,7 +166,7 @@ func (sc *StratumContext) authorizeLocked(username, password string) error {
 	if err != nil {
 		return err
 	}
-	log.Debugf("Authorization successful")
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "authorizeLocked"), zap.String("debug", "authorization successful"))
 	sc.NotifyNewWork(work)
 
 	// Handle messages
@@ -169,18 +174,19 @@ func (sc *StratumContext) authorizeLocked(username, password string) error {
 	// Keep-alive
 	go sc.RunKeepAlive()
 
-	log.Debugf("Returning from authorizeLocked")
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "authorizeLocked"), zap.String("debug", "returning from authorizeLocked"))
 	return nil
 }
 
 func (sc *StratumContext) RunKeepAlive() {
+	defer zap.L().Sync()
 	sendKeepAlive := func() {
 		args := make(map[string]interface{})
 		args["id"] = sc.SessionID
 		if _, err := sc.Call("keepalived", args); err != nil {
-			log.Errorf("Failed keepalive: %v", err)
+			zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunKeepAlive"), zap.Error(err))
 		} else {
-			log.Debugf("Posted keepalive")
+			zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunKeepAlive"), zap.String("debug", "posted keepalive"))
 		}
 	}
 
@@ -195,6 +201,7 @@ func (sc *StratumContext) RunKeepAlive() {
 }
 
 func (sc *StratumContext) RunHandleMessages() {
+	defer zap.L().Sync()
 	// This loop only ends on error
 	defer func() {
 		sc.Reconnect()
@@ -203,14 +210,13 @@ func (sc *StratumContext) RunHandleMessages() {
 	for {
 		line, err := sc.ReadLine()
 		if err != nil {
-			log.Debugf("Failed to read string from stratum: %v", err)
+			zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.Error(err))
 			break
 		}
-		log.Debugf("Received line from server: %v", line)
-
+		zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("received line from server", line))
 		var msg map[string]interface{}
 		if err = json.Unmarshal([]byte(line), &msg); err != nil {
-			log.Errorf("Failed to unmarshal line into JSON: '%s': %v", line, err)
+			zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("error", "failed to unmarshal line into JSON"), zap.String("line", line), zap.Error(err))
 			break
 		}
 
@@ -220,7 +226,7 @@ func (sc *StratumContext) RunHandleMessages() {
 			// This is a response
 			response, err := ParseResponse([]byte(line))
 			if err != nil {
-				log.Errorf("Failed to parse response from server: %v", err)
+				zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("error", "failed to parse response from server"), zap.Error(err))
 				continue
 			}
 			isError := false
@@ -235,47 +241,50 @@ func (sc *StratumContext) RunHandleMessages() {
 					sc.submittedWorkRequestIds.Remove(id)
 					sc.numAcceptedResults++
 					sc.numSubmittedResults++
-					log.Infof("accepted %d/%d", sc.numAcceptedResults, sc.numSubmittedResults)
+					zap.L().Info("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.Uint64("numAcceptedResults", sc.numAcceptedResults), zap.Uint64("numSubmittedResults", sc.numSubmittedResults))
 				} else {
 					sc.submittedWorkRequestIds.Remove(id)
 					sc.numSubmittedResults++
-					log.Errorf("rejected %d/%d: %s", (sc.numSubmittedResults - sc.numAcceptedResults), sc.numSubmittedResults, response.Error.Message)
+					zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.Uint64("numRejectedResults", sc.numSubmittedResults-sc.numAcceptedResults),
+						zap.Uint64("numSubmittedResults", sc.numSubmittedResults), zap.Error(response.Error))
 				}
 			} else {
 				statusIntf, ok := response.Result["status"]
 				if !ok {
-					log.Warnf("Server sent back unknown message: %v", response.String())
+					zap.L().Warn("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("server sent back unknown message", response.String()))
 				} else {
 					status := statusIntf.(string)
 					switch status {
 					case "KEEPALIVED":
 						// Nothing to do
 					case "OK":
-						log.Errorf("Failed to properly mark submitted work as accepted. work ID: %v, message=%s", response.MessageID, response.String())
-						log.Errorf("Works: %v", sc.submittedWorkRequestIds.List())
+						zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("error", "failed to properly mark submitted work as accepted"),
+							zap.String("work id", fmt.Sprintf("%v", response.MessageID)), zap.String("message", response.String()), zap.String("works", fmt.Sprintf("%v", sc.submittedWorkRequestIds.List())))
 					}
 				}
 			}
 			sc.NotifyResponse(response)
 		default:
 			// this is a notification
-			log.Debugf("Received message from stratum server: %v", msg)
+			// TODO don't use fmt.sprintf to format interfaces?
+			zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("received message from stratum server", fmt.Sprintf("%v", msg)))
 			switch msg["method"].(string) {
 			case "job":
 				if work, err := ParseWork(msg["params"].(map[string]interface{})); err != nil {
-					log.Errorf("Failed to parse job: %v", err)
+					zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("error", "failed to parse job"), zap.Error(err))
 					continue
 				} else {
 					sc.NotifyNewWork(work)
 				}
 			default:
-				log.Errorf("Unknown method: %v", msg["method"])
+				zap.L().Error("stratum-client", zap.String("file", "stratum"), zap.String("func", "RunHandleMessages"), zap.String("unknown method", fmt.Sprintf("%v", msg["method"])))
 			}
 		}
 	}
 }
 
 func (sc *StratumContext) Reconnect() {
+	defer zap.L().Sync()
 	sc.Lock()
 	defer sc.Unlock()
 	sc.stopChan <- struct{}{}
@@ -285,26 +294,28 @@ func (sc *StratumContext) Reconnect() {
 	}
 	reconnectTimeout := 1 * time.Second
 	for {
-		log.Infof("Reconnecting ...")
+		zap.L().Info("stratum-client", zap.String("file", "stratum"), zap.String("func", "Reconnect"), zap.String("info", "reconnecting"))
 		now := time.Now()
 		if now.Sub(sc.lastReconnectTime) < reconnectTimeout {
 			time.Sleep(reconnectTimeout) //XXX: Should we sleeping the remaining time?
 		}
 		if err := sc.Connect(sc.url); err != nil {
 			// TODO: We should probably try n-times before crashing
-			log.Errorf("Failled to reconnect to %v: %v", sc.url, err)
+			zap.L().Info("stratum-client", zap.String("file", "stratum"), zap.String("func", "Reconnect"), zap.String("error", "failed to reconnect"), zap.String("url", sc.url), zap.Error(err))
 			reconnectTimeout = 5 * time.Second
 		} else {
 			break
 		}
 	}
-	log.Debugf("Connected. Authorizing ...")
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "Reconnect"), zap.String("debug", "connected. authorizing..."))
 	sc.authorizeLocked(sc.username, sc.password)
 }
 
 func (sc *StratumContext) SubmitWork(work *Work, hash string) error {
+	defer zap.L().Sync()
 	if work == sc.LastSubmittedWork {
-		// log.Warnf("Prevented submission of stale work")
+		// TODO should this return nil? this was done by the og dev
+		zap.L().Warn("stratum-client", zap.String("file", "stratum"), zap.String("func", "SubmitWork"), zap.String("warn", "prevented submission of stale work"))
 		// return nil
 	}
 	args := make(map[string]interface{})
@@ -321,7 +332,7 @@ func (sc *StratumContext) SubmitWork(work *Work, hash string) error {
 	} else {
 		sc.submittedWorkRequestIds.Add(uint64(req.MessageID.(int)))
 		// Successfully submitted result
-		log.Debugf("Successfully submitted work result: job=%v result=%v", work.JobID, hash)
+		zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "SubmitWork"), zap.String("info", "successfully submitted work result"), zap.String("id", work.JobID), zap.String("hash", hash))
 		args["work"] = work
 		sc.NotifySubmit(args)
 		sc.LastSubmittedWork = work
@@ -330,17 +341,20 @@ func (sc *StratumContext) SubmitWork(work *Work, hash string) error {
 }
 
 func (sc *StratumContext) RegisterSubmitListener(sChan chan interface{}) {
-	log.Debugf("Registerd stratum.submitListener")
+	defer zap.L().Sync()
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RegisterSubmitListener"), zap.String("debug", "registered stratum.submitListener"))
 	sc.submitListeners.Add(sChan)
 }
 
 func (sc *StratumContext) RegisterWorkListener(workChan chan *Work) {
-	log.Debugf("Registerd stratum.workListener")
+	defer zap.L().Sync()
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RegisterSubmitListener"), zap.String("debug", "registered stratum.workListener"))
 	sc.workListeners.Add(workChan)
 }
 
 func (sc *StratumContext) RegisterResponseListener(rChan chan *Response) {
-	log.Debugf("Registerd stratum.responseListener")
+	defer zap.L().Sync()
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "RegisterResponseListener"), zap.String("debug", "registered stratum.responseListener"))
 	sc.responseListeners.Add(rChan)
 }
 
@@ -360,14 +374,15 @@ func ParseResponse(b []byte) (*Response, error) {
 }
 
 func (sc *StratumContext) NotifyNewWork(work *Work) {
+	defer zap.L().Sync()
 	if (sc.Work != nil && strings.Compare(work.JobID, sc.Work.JobID) == 0) || sc.submittedWorkRequestIds.Has(work.JobID) {
-		log.Warnf("Duplicate job request. Reconnecting to: %v", sc.url)
+		zap.L().Warn("stratum-client", zap.String("file", "stratum"), zap.String("func", "NotifyNewWork"), zap.String("debug", "duplicate job request"), zap.String("reconnecting to ", sc.url))
 		// Just disconnect
 		sc.connected = false
 		sc.Close()
 		return
 	}
-	log.Infof("\x1B[01;35mnew job\x1B[0m from \x1B[01;37m%v\x1B[0m diff \x1B[01;37m%d \x1B[0m ", sc.url, int(work.Difficulty))
+	zap.L().Info("stratum-client", zap.String("file", "stratum"), zap.String("func", "NotifyNewWork"), zap.String("new job", sc.url), zap.Float64("difficulty", work.Difficulty))
 	sc.Work = work
 	for _, obj := range sc.workListeners.List() {
 		ch := obj.(chan *Work)
@@ -394,8 +409,9 @@ func (sc *StratumContext) Lock() {
 }
 
 func (sc *StratumContext) lockDebug() {
+	defer zap.L().Sync()
 	sc.Mutex.Lock()
-	log.Debugf("Lock acquired by: %v", MyCaller())
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "lockDebug"), zap.String("mutex lock acquired by", MyCaller()))
 }
 
 func (sc *StratumContext) Unlock() {
@@ -403,6 +419,7 @@ func (sc *StratumContext) Unlock() {
 }
 
 func (sc *StratumContext) unlockDebug() {
+	defer zap.L().Sync()
 	sc.Mutex.Unlock()
-	log.Debugf("Lock released by: %v", MyCaller())
+	zap.L().Debug("stratum-client", zap.String("file", "stratum"), zap.String("func", "unlockDebug"), zap.String("mutex unlocked by", MyCaller()))
 }
