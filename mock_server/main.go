@@ -23,6 +23,7 @@ func init() {
 	zap.ReplaceGlobals(zap.New(core))
 	// set the port
 	port = flag.IntP("port", "p", 8888, "port to run mock stratum server")
+	flag.Parse()
 }
 
 func main() {
