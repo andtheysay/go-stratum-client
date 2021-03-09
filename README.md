@@ -19,7 +19,7 @@ Most of the code was implemented by going through the sources of cpuminer-multi 
   - Use go modules
   - Replace logrus with [zap](https://github.com/uber-go/zap) because I like zap more
   - Replace json with [json-iterator](https://github.com/json-iterator/go) to encode json quicker
-  - Use andtheysay's fork of [set](github.com/fatih/set). There are no functional changes, I just wanted to backup the repo because it is in archived mode
+  - Use andtheysay's fork of [set](https://github.com/fatih/set). There are no functional changes, I just wanted to backup the repo because it is in archived mode
   - Updated the README
   
 ## Can I help?
