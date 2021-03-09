@@ -1,6 +1,6 @@
 # go-stratum-client
 Stratum client implemented in Go (WIP) forked from https://github.com/gurupras/go-stratum-client 
-A huge thanks to gurupras for writing and releasing the original project
+<br />A huge thanks to gurupras for writing and releasing the original project
 
 This is an extremely primitive stratum client implemented in Golang. 
 Most of the code was implemented by going through the sources of cpuminer-multi and xmrig.
